@@ -135,3 +135,25 @@ locally and want browser-originated chat to use the same runtime/tool path as
 messaging surfaces. Attachments, cancellation, approvals, and clarify prompts
 still follow WebUI's current compatibility path and may not match every messaging
 surface until the runtime-adapter migration is complete.
+# Native S&G client front door (experimental)
+
+Hermes WebUI can expose the security foundation for the versioned native S&G
+client contract. It is disabled by default. Enable it only behind HTTPS (or on
+verified loopback):
+
+```bash
+HERMES_WEBUI_SGBOT_FRONT_DOOR=1 ./ctl.sh restart
+python -m api.sgbot_front_door issue-code
+```
+
+The command prints a six-digit enrollment code that expires after five minutes
+and can be used once. Enrolled devices receive independent opaque credentials;
+only SHA-256 token digests are stored in
+`HERMES_WEBUI_STATE_DIR/sgbot_front_door.json`, with mode `0600`. Revoking
+`DELETE /v1/devices/self` invalidates only the calling device.
+
+This first service slice exposes `/v1/health`, `/v1/capabilities`,
+`/v1/profiles`, `/v1/devices/enroll`, and `/v1/devices/self`. Conversation,
+run, event, and approval routes remain unavailable until their profile-routing
+and replay invariants are implemented and tested; clients must not silently
+fall back to per-profile keys.
