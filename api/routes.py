@@ -5801,6 +5801,7 @@ def _csrf_exempt_path(path: str) -> bool:
         "/api/auth/passkey/options",
         "/api/auth/passkey/login",
         "/api/csp-report",
+        "/v1/devices/enroll",
     }
 
 
@@ -13566,6 +13567,21 @@ def handle_get(handler, parsed) -> bool:
     if proxy_result is not False:
         return proxy_result
 
+    if parsed.path in {"/v1/health", "/v1/capabilities", "/v1/profiles"}:
+        from api import sgbot_front_door
+        if not sgbot_front_door.enabled():
+            return False
+        try:
+            sgbot_front_door.authenticate(handler.headers.get("Authorization"))
+            if parsed.path == "/v1/health":
+                return j(handler, {"status": "ok"})
+            if parsed.path == "/v1/capabilities":
+                return j(handler, sgbot_front_door.capabilities_payload())
+            from api.profiles import list_profiles_api
+            return j(handler, sgbot_front_door.roster_payload(list_profiles_api()))
+        except sgbot_front_door.FrontDoorError as exc:
+            return j(handler, {"error": str(exc)}, status=exc.status)
+
     if parsed.path.startswith("/session/static/"):
         # Strip the leading "/session" so _serve_static() sees a path that
         # starts with "/static/" (its required prefix). _serve_static enforces
@@ -15142,6 +15158,21 @@ def handle_post(handler, parsed) -> bool:
         finally:
             if diag:
                 diag.finish()
+    if parsed.path == "/v1/devices/enroll":
+        from api import sgbot_front_door
+        if not sgbot_front_door.enabled():
+            return False
+        try:
+            body = read_body(handler)
+            return j(handler, sgbot_front_door.enroll_device(
+                body.get("code"),
+                body.get("device_id"),
+                body.get("display_name"),
+                body.get("kind"),
+                server_origin=_request_base_url(handler),
+            ))
+        except sgbot_front_door.FrontDoorError as exc:
+            return j(handler, {"error": str(exc)}, status=exc.status)
     # T1 deprecation alias for the legacy ack endpoint that the pre-rename
     # WebUI used to POST to after handling ``process_complete``. The new
     # canonical SSE event is ``bg_task_complete`` and the new ack endpoint
@@ -17813,6 +17844,15 @@ def handle_patch(handler, parsed) -> bool:
 
 def handle_delete(handler, parsed) -> bool:
     """Handle all DELETE routes. Returns True if handled, False for 404."""
+    if parsed.path == "/v1/devices/self":
+        from api import sgbot_front_door
+        if not sgbot_front_door.enabled():
+            return False
+        try:
+            sgbot_front_door.revoke_device(handler.headers.get("Authorization"))
+            return j(handler, {})
+        except sgbot_front_door.FrontDoorError as exc:
+            return j(handler, {"error": str(exc)}, status=exc.status)
     if not _check_csrf(handler):
         return j(handler, {"error": _csrf_rejection_error(handler)}, status=403)
     proxy_result = _handle_extension_sidecar_proxy(
