@@ -13567,7 +13567,7 @@ def handle_get(handler, parsed) -> bool:
     if proxy_result is not False:
         return proxy_result
 
-    if parsed.path in {"/v1/health", "/v1/capabilities", "/v1/profiles"}:
+    if parsed.path.startswith("/v1/"):
         from api import sgbot_front_door
         if not sgbot_front_door.enabled():
             return False
@@ -13577,8 +13577,49 @@ def handle_get(handler, parsed) -> bool:
                 return j(handler, {"status": "ok"})
             if parsed.path == "/v1/capabilities":
                 return j(handler, sgbot_front_door.capabilities_payload())
-            from api.profiles import list_profiles_api
-            return j(handler, sgbot_front_door.roster_payload(list_profiles_api()))
+            if parsed.path == "/v1/profiles":
+                return j(handler, sgbot_front_door.roster_payload(list_profiles_api()))
+            match = re.fullmatch(r"/v1/profiles/([^/]+)/bot-chat", parsed.path)
+            if match:
+                profile_id = unquote(match.group(1))
+                sgbot_front_door.profile_row(profile_id, list_profiles_api())
+                return j(handler, sgbot_front_door.bot_chat_payload(
+                    profile_id,
+                    "Clarence" if profile_id == "clarence" else str(profile_id).replace("-", " ").title(),
+                ))
+            match = re.fullmatch(r"/v1/bot-chats/([^/]+)/messages", parsed.path)
+            if match:
+                return j(handler, sgbot_front_door.load_history(
+                    unquote(match.group(1)), list_profiles_api()
+                ))
+            match = re.fullmatch(r"/v1/runs/([^/]+)(/events)?", parsed.path)
+            if match:
+                run_id, suffix = unquote(match.group(1)), match.group(2)
+                if suffix == "/events":
+                    upstream = sgbot_front_door.open_run_events(run_id, list_profiles_api())
+                    try:
+                        handler.send_response(int(getattr(upstream, "status", 200)))
+                        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                        handler.send_header("Cache-Control", "no-cache")
+                        handler.send_header("X-Accel-Buffering", "no")
+                        handler.send_header("Connection", "close")
+                        end_sse_headers(handler)
+                        while True:
+                            chunk = upstream.read(8192)
+                            if not chunk:
+                                break
+                            handler.wfile.write(chunk)
+                            handler.wfile.flush()
+                    except _CLIENT_DISCONNECT_ERRORS:
+                        pass
+                    finally:
+                        upstream.close()
+                    return True
+                status, payload = sgbot_front_door.proxy_run_json(
+                    run_id, "", "GET", list_profiles_api()
+                )
+                return j(handler, payload, status=status)
+            return False
         except sgbot_front_door.FrontDoorError as exc:
             return j(handler, {"error": str(exc)}, status=exc.status)
 
@@ -15171,6 +15212,35 @@ def handle_post(handler, parsed) -> bool:
                 body.get("kind"),
                 server_origin=_request_base_url(handler),
             ))
+        except sgbot_front_door.FrontDoorError as exc:
+            return j(handler, {"error": str(exc)}, status=exc.status)
+    if parsed.path.startswith("/v1/"):
+        from api import sgbot_front_door
+        if not sgbot_front_door.enabled():
+            return False
+        try:
+            sgbot_front_door.authenticate(handler.headers.get("Authorization"))
+            body = read_body(handler)
+            match = re.fullmatch(r"/v1/bot-chats/([^/]+)/runs", parsed.path)
+            if match:
+                status, payload = sgbot_front_door.create_run(
+                    unquote(match.group(1)),
+                    body,
+                    list_profiles_api(),
+                    idempotency_key=str(handler.headers.get("Idempotency-Key") or ""),
+                )
+                return j(handler, payload, status=status)
+            match = re.fullmatch(r"/v1/runs/([^/]+)/(stop|steer)", parsed.path)
+            if match:
+                run_id, action = unquote(match.group(1)), match.group(2)
+                upstream_body = {} if action == "stop" else {"input": str(body.get("input") or "")}
+                if action == "steer" and not upstream_body["input"].strip():
+                    raise sgbot_front_door.FrontDoorError("input is required")
+                status, payload = sgbot_front_door.proxy_run_json(
+                    run_id, f"/{action}", "POST", list_profiles_api(), body=upstream_body
+                )
+                return j(handler, payload, status=status)
+            return False
         except sgbot_front_door.FrontDoorError as exc:
             return j(handler, {"error": str(exc)}, status=exc.status)
     # T1 deprecation alias for the legacy ack endpoint that the pre-rename
