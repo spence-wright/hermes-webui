@@ -169,8 +169,17 @@ only SHA-256 token digests are stored in
 `HERMES_WEBUI_STATE_DIR/sgbot_front_door.json`, with mode `0600`. Revoking
 `DELETE /v1/devices/self` invalidates only the calling device.
 
-This first service slice exposes `/v1/health`, `/v1/capabilities`,
-`/v1/profiles`, `/v1/devices/enroll`, and `/v1/devices/self`. Conversation,
-run, event, and approval routes remain unavailable until their profile-routing
-and replay invariants are implemented and tested; clients must not silently
-fall back to per-profile keys.
+The front door exposes `/v1/health`, `/v1/capabilities`, `/v1/profiles`,
+`/v1/devices/enroll`, and `/v1/devices/self`. It also resolves one stable
+`sgbot.bot-chat.<profile>` session per profile, reads that transcript from the
+profile's canonical `state.db`, and routes create/status/events/stop/steer to
+the profile's loopback Hermes API server. Run ownership is persisted by the
+front door so reconnect and control requests cannot drift to another profile.
+
+Each ready profile must already run its Hermes `api_server` and define its own
+`API_SERVER_PORT` and `API_SERVER_KEY` in that profile's `.env`. Those values
+remain server-side: roster and client responses contain neither endpoints nor
+keys. Missing credentials, stopped gateways, duplicate profile identities,
+and unknown Bot Chat or run IDs fail closed. Approval decisions and durable
+cursor replay remain unavailable and are reported as unsupported rather than
+silently emulated.
